@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Root Key Ceremony Console</title>
+<style>
+  :root { --bg:#0f1420; --panel:#171e2e; --line:#27314a; --ink:#d8e0f0;
+          --muted:#8a97b5; --ok:#3fd08a; --warn:#f0b34a; --err:#ef6a6a;
+          --accent:#6aa6ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+  header { padding:14px 20px; border-bottom:1px solid var(--line);
+           display:flex; align-items:baseline; gap:14px; }
+  header h1 { font-size:16px; margin:0; letter-spacing:.5px; }
+  header span { color:var(--muted); font-size:12px; }
+  main { display:grid; grid-template-columns: 1fr 1fr; gap:14px; padding:14px; }
+  .panel { background:var(--panel); border:1px solid var(--line);
+           border-radius:10px; padding:14px; min-height:120px; }
+  .panel h2 { font-size:12px; text-transform:uppercase; letter-spacing:1px;
+              color:var(--muted); margin:0 0 10px; }
+  .full { grid-column: 1 / -1; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  td, th { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line);
+           vertical-align:top; }
+  th { color:var(--muted); font-weight:600; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px;
+          font-size:11px; border:1px solid var(--line); }
+  .ACTIVE { color:var(--ok); border-color:var(--ok); }
+  .STAGED { color:var(--accent); border-color:var(--accent); }
+  .RETIRING { color:var(--warn); border-color:var(--warn); }
+  .DESTROYED, .ABORTED { color:var(--err); border-color:var(--err); }
+  .COMPLETED { color:var(--ok); }
+  .OPEN { color:var(--accent); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+  input, select, button, textarea { background:#0d1220; color:var(--ink);
+    border:1px solid var(--line); border-radius:7px; padding:7px 10px;
+    font:inherit; }
+  button { cursor:pointer; }
+  button.primary { border-color:var(--accent); color:var(--accent); }
+  button.danger { border-color:var(--err); color:var(--err); }
+  pre { white-space:pre-wrap; word-break:break-all; max-height:340px;
+        overflow:auto; background:#0c1120; border:1px solid var(--line);
+        border-radius:8px; padding:10px; }
+  #toast { position:fixed; right:16px; bottom:16px; max-width:460px;
+           background:#10182b; border:1px solid var(--line); border-radius:8px;
+           padding:10px 14px; display:none; }
+  #toast.err { border-color:var(--err); color:var(--err); }
+  #toast.ok { border-color:var(--ok); color:var(--ok); }
+  small { color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>ROOT KEY CEREMONY CONSOLE</h1>
+  <span>fixed roles · threshold shares · device attestation · ordered stages</span>
+  <span style="margin-left:auto"><button onclick="refresh()">refresh</button>
+  <button onclick="loadAudit()">audit</button>
+  <button onclick="doExport()">export</button></span>
+</header>
+<main>
+  <section class="panel">
+    <h2>Key versions by purpose</h2>
+    <div id="keys"><small>loading…</small></div>
+  </section>
+  <section class="panel">
+    <h2>Ceremonies</h2>
+    <div id="ceremonies"><small>loading…</small></div>
+  </section>
+
+  <section class="panel">
+    <h2>1 · Open ceremony</h2>
+    <div class="row">
+      <select id="ckind">
+        <option>GENERATE</option><option>ROTATE</option>
+        <option>BACKUP</option><option>DESTROY</option>
+      </select>
+      <input id="cpolicy" placeholder="policy_id" value="pol-root-v1"/>
+      <input id="cpurpose" placeholder="purpose" value="root-signing"/>
+      <input id="cactor" placeholder="actor" value="alice"/>
+      <input id="ctarget" placeholder="target_version (DESTROY only)"/>
+    </div>
+    <button class="primary" onclick="openCeremony()">open</button>
+  </section>
+
+  <section class="panel">
+    <h2>2 · Drive a ceremony (device agents)</h2>
+    <div class="row">
+      <input id="cid" placeholder="ceremony_id"/>
+      <input id="did" placeholder="device_id e.g. dev_alice"/>
+    </div>
+    <div class="row">
+      <button onclick="step('attest')">attest</button>
+      <button onclick="step('receive')">receive+verify share</button>
+      <button onclick="step('confirm')">confirm</button>
+      <button onclick="step('submit-share')">submit recovery share</button>
+      <button onclick="step('commit')">commit</button>
+      <button onclick="publish()">publish rotation (CAS)</button>
+      <button class="danger" onclick="abortCeremony()">abort round</button>
+    </div>
+    <small>GENERATE/ROTATE: every device attests → receives → ≥threshold confirm
+      (incl. an owner) → commit. ROTATE then needs <b>publish</b>.
+      BACKUP: survivors attest → submit-share until threshold, then all
+      recovered-roster devices receive+confirm → commit.
+      DESTROY: all attest → ≥threshold confirm → commit.</small>
+  </section>
+
+  <section class="panel">
+    <h2>3 · Signing test (signers use ACTIVE only)</h2>
+    <div class="row">
+      <input id="spurpose" value="root-signing" style="width:160px"/>
+      <input id="msg" value="canonical test message" style="flex:1"/>
+    </div>
+    <div class="row">
+      <button class="primary" onclick="doSign()">sign</button>
+      <button onclick="doVerify()">verify (accepts historical versions)</button>
+    </div>
+    <pre id="sigout" hidden></pre>
+  </section>
+
+  <section class="panel">
+    <h2>Enrollment / policy</h2>
+    <div class="row">
+      <input id="ppid" placeholder="participant_id"/>
+      <input id="pname" placeholder="display name"/>
+      <select id="prole">
+        <option>ROOT_OWNER</option><option>KEY_STEWARD</option>
+        <option>WITNESS_SHAREHOLDER</option><option>ENCLAVE_OPERATOR</option>
+      </select>
+      <button onclick="enroll()">enroll + provision device</button>
+    </div>
+    <div class="row">
+      <input id="polid" value="pol-root-v1"/>
+      <input id="thr" type="number" value="3" style="width:70px"/>
+      <small>slots as JSON triples [[participant, role, device], …]</small>
+    </div>
+    <textarea id="slots" rows="3" style="width:100%"></textarea>
+    <div class="row" style="margin-top:6px">
+      <button onclick="createPolicy()">create policy</button>
+    </div>
+  </section>
+
+  <section class="panel full">
+    <h2>Audit trail / export verification</h2>
+    <pre id="audit"><small>press audit</small></pre>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+let LAST_SIG = null;
+function toast(t, cls) {
+  const e = document.getElementById("toast");
+  e.textContent = t; e.className = cls || ""; e.style.display = "block";
+  setTimeout(() => e.style.display = "none", 3500);
+}
+async function api(path, method, body) {
+  const opt = { method: method || "GET", headers: {"Content-Type":"application/json"} };
+  if (body) opt.body = JSON.stringify(body);
+  const r = await fetch(path, opt);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(j.message || r.statusText), j);
+  return j;
+}
+async function refresh() {
+  try {
+    const k = await api("/api/keys");
+    document.getElementById("keys").innerHTML = renderKeys(k);
+    const c = await api("/api/ceremonies");
+    document.getElementById("ceremonies").innerHTML = renderCeremonies(c);
+  } catch (e) { toast(String(e), "err"); }
+}
+function pill(s) { return `<span class="pill ${s}">${s}</span>`; }
+function renderKeys(k) {
+  if (!k.keys.length) return "<small>no keys yet</small>";
+  const by = {};
+  for (const x of k.keys) (by[x.purpose] ??= []).push(x);
+  return Object.entries(by).map(([purpose, list]) => `
+    <div><b>${purpose}</b> <small>current: ${k.purposes[purpose] || "—"}</small>
+    <table><tr><th>ver</th><th>status</th><th>fingerprint</th><th>id</th><th>history</th></tr>
+    ${list.map(x => `<tr><td>${x.version}</td><td>${pill(x.status)}</td>
+      <td>${x.fingerprint}</td><td><small>${x.id}</small></td>
+      <td><small>src ${x.source_ceremony.slice(0,10)} ·
+      ${x.destroyed_at ? "destroyed" : x.retired_at ? "retiring" :
+        x.activated_at ? "active" : "staged"}</small></td></tr>`).join("")}
+    </table></div>`).join("");
+}
+function renderCeremonies(c) {
+  if (!c.ceremonies.length) return "<small>no ceremonies</small>";
+  return `<table><tr><th>id</th><th>kind</th><th>purpose</th><th>stage</th>
+    <th>status</th><th>attested/confirmed</th></tr>
+    ${c.ceremonies.map(x => {
+      const parts = Object.values(x.participants);
+      const a = parts.filter(p => p.attested).length;
+      const cf = x.confirmations.length;
+      return `<tr><td><small>${x.id}</small></td><td>${x.kind}</td>
+        <td>${x.purpose}</td><td>${x.stage}</td><td>${pill(x.status)}</td>
+        <td>${a}/${parts.length} · ${cf} confirmed
+        ${x.abort ? `<br><small class="DESTROYED">aborted: ${x.abort.reason}</small>`:""}
+        ${x.published ? `<br><small>published: ${x.published.old} → new</small>`:""}
+        </td></tr>`;
+    }).join("")}</table>`;
+}
+async function openCeremony() {
+  try {
+    const tv = document.getElementById("ctarget").value;
+    const j = await api("/api/ceremonies/open", "POST", {
+      kind: document.getElementById("ckind").value,
+      policy_id: document.getElementById("cpolicy").value,
+      purpose: document.getElementById("cpurpose").value,
+      actor: document.getElementById("cactor").value,
+      target_version: tv || null});
+    document.getElementById("cid").value = j.id;
+    toast("opened " + j.id, "ok"); refresh();
+  } catch (e) { toast(e.message, "err"); }
+}
+async function step(which) {
+  const cid = document.getElementById("cid").value.trim();
+  const did = document.getElementById("did").value.trim();
+  try {
+    const url = `/api/ceremonies/${cid}/${which}`;
+    const body = which === "commit"
+      ? {actor: document.getElementById("cactor").value}
+      : {device_id: did};
+    const j = await api(url, "POST", body);
+    toast(which + " → " + (j.stage || j.status || "ok"), "ok");
+    if (j.id && which !== "commit") document.getElementById("cid").value = j.id;
+    refresh();
+  } catch (e) { toast(e.message, "err"); }
+}
+async function publish() {
+  const cid = document.getElementById("cid").value.trim();
+  try {
+    const k = await api("/api/keys");
+    const purpose = document.getElementById("cpurpose").value;
+    const expected = k.purposes[purpose];
+    const j = await api(`/api/ceremonies/${cid}/publish`, "POST",
+      {actor: document.getElementById("cactor").value, expected_active: expected});
+    toast("published; new version now ACTIVE", "ok"); refresh();
+  } catch (e) { toast(e.message + (e.error==="RACE_LOST" ? " (retry against current)":""), "err"); }
+}
+async function abortCeremony() {
+  const cid = document.getElementById("cid").value.trim();
+  try {
+    await api(`/api/ceremonies/${cid}/abort`, "POST",
+      {actor: document.getElementById("cactor").value,
+       reason: "manual abort from console"});
+    toast("round aborted; audit retained", "ok"); refresh();
+  } catch (e) { toast(e.message, "err"); }
+}
+async function doSign() {
+  try {
+    const j = await api("/api/sign", "POST", {
+      purpose: document.getElementById("spurpose").value,
+      message: document.getElementById("msg").value});
+    LAST_SIG = j;
+    const out = document.getElementById("sigout");
+    out.hidden = false;
+    out.textContent = `signed by ${j.version_id} (v${j.version}, ${j.status})\n${j.sig}`;
+  } catch (e) { toast(e.message, "err"); }
+}
+async function doVerify() {
+  if (!LAST_SIG) return toast("sign first", "err");
+  try {
+    const j = await api("/api/verify", "POST", {
+      purpose: document.getElementById("spurpose").value,
+      message: document.getElementById("msg").value, sig: LAST_SIG.sig});
+    toast(j.valid ? `valid: ${j.version_id} (${j.status}${j.active?", current":"":", historical"})`
+                  : "invalid", j.valid ? "ok" : "err");
+  } catch (e) { toast(e.message, "err"); }
+}
+async function enroll() {
+  try {
+    await api("/api/participants", "POST", {
+      participant_id: document.getElementById("ppid").value,
+      name: document.getElementById("pname").value,
+      role: document.getElementById("prole").value});
+    toast("enrolled + device provisioned", "ok");
+  } catch (e) { toast(e.message, "err"); }
+}
+async function createPolicy() {
+  try {
+    await api("/api/policies", "POST", {
+      policy_id: document.getElementById("polid").value,
+      label: "console policy", threshold: Number(document.getElementById("thr").value),
+      slots: JSON.parse(document.getElementById("slots").value)});
+    toast("policy created", "ok");
+  } catch (e) { toast(e.message, "err"); }
+}
+async function loadAudit() {
+  const j = await api("/api/audit");
+  document.getElementById("audit").textContent =
+    (j.verified ? "AUDIT CHAIN VERIFIED ✓\n\n" : "PROBLEMS: " + JSON.stringify(j.verify_problems) + "\n\n")
+    + j.entries.map(e => `${String(e.seq).padStart(4)} ${e.ts} ${e.event.padEnd(28)} ${JSON.stringify(e.payload).slice(0,200)}`).join("\n");
+}
+async function doExport() {
+  const j = await api("/api/export");
+  document.getElementById("audit").textContent =
+    "EXPORT BUNDLE (signed, verifiable)\n\n" + JSON.stringify(j, null, 2).slice(0, 12000);
+}
+refresh();
+</script>
+</body>
+</html>
