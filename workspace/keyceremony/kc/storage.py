@@ -184,7 +184,12 @@ class Store:
         if not os.path.exists(self.state_path):
             return self._empty_state()
         with open(self.state_path, encoding="utf-8") as f:
-            return json.load(f)
+            state = json.load(f)
+        # forward migration: older stores predate the watchstander desk
+        for key, default in self._empty_state().items():
+            if key not in state:
+                state[key] = default
+        return state
 
     def save_state(self, state: dict):
         tmp = self.state_path + ".tmp"
@@ -197,7 +202,7 @@ class Store:
     @staticmethod
     def _empty_state() -> dict:
         return {
-            "schema": 1,
+            "schema": 2,
             "participants": {},   # participant_id -> record
             "devices": {},        # device_id -> EnrolledDevice dict
             "policies": {},       # policy_id -> Policy dict
@@ -208,4 +213,9 @@ class Store:
             "spent_nonces": {},   # nonce -> (ceremony_id, when)
             "wraps": {},          # key_version_id -> sealed material dict
             "sequence": 0,
+            # watchstander desk: duties, attested sessions, four-eyes orders
+            "duty_grants": {},    # participant_id -> sorted tuple of duties
+            "sessions": {},       # token_id -> session record (public fields)
+            "orders": {},         # order_id -> authorization order record
+            "login_challenges": {},  # device_id -> {"nonce": b64, "ts": float}
         }

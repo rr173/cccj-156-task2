@@ -2,21 +2,21 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
-<title>Root Key Ceremony Console</title>
+<title>Root Key Ceremony · Watchstander Console</title>
 <style>
   :root { --bg:#0f1420; --panel:#171e2e; --line:#27314a; --ink:#d8e0f0;
           --muted:#8a97b5; --ok:#3fd08a; --warn:#f0b34a; --err:#ef6a6a;
-          --accent:#6aa6ff; }
+          --accent:#6aa6ff; --violet:#b58cff; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--ink);
          font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
-  header { padding:14px 20px; border-bottom:1px solid var(--line);
-           display:flex; align-items:baseline; gap:14px; }
-  header h1 { font-size:16px; margin:0; letter-spacing:.5px; }
-  header span { color:var(--muted); font-size:12px; }
+  header { padding:12px 20px; border-bottom:1px solid var(--line);
+           display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  header h1 { font-size:15px; margin:0; letter-spacing:.5px; }
+  header span.sub { color:var(--muted); font-size:12px; }
   main { display:grid; grid-template-columns: 1fr 1fr; gap:14px; padding:14px; }
   .panel { background:var(--panel); border:1px solid var(--line);
-           border-radius:10px; padding:14px; min-height:120px; }
+           border-radius:10px; padding:14px; min-height:90px; }
   .panel h2 { font-size:12px; text-transform:uppercase; letter-spacing:1px;
               color:var(--muted); margin:0 0 10px; }
   .full { grid-column: 1 / -1; }
@@ -29,47 +29,83 @@
   .ACTIVE { color:var(--ok); border-color:var(--ok); }
   .STAGED { color:var(--accent); border-color:var(--accent); }
   .RETIRING { color:var(--warn); border-color:var(--warn); }
-  .DESTROYED, .ABORTED { color:var(--err); border-color:var(--err); }
-  .COMPLETED { color:var(--ok); }
-  .OPEN { color:var(--accent); }
-  .row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+  .DESTROYED, .ABORTED, .CLOSED, .REJECTED, .WITHDRAWN { color:var(--err); border-color:var(--err); }
+  .COMPLETED, .APPROVED { color:var(--ok); border-color:var(--ok); }
+  .OPEN { color:var(--violet); border-color:var(--violet); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; align-items:center; }
   input, select, button, textarea { background:#0d1220; color:var(--ink);
     border:1px solid var(--line); border-radius:7px; padding:7px 10px;
     font:inherit; }
   button { cursor:pointer; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
   button.primary { border-color:var(--accent); color:var(--accent); }
-  button.danger { border-color:var(--err); color:var(--err); }
+  button.approve { border-color:var(--ok); color:var(--ok); }
+  button.reject, button.danger { border-color:var(--err); color:var(--err); }
+  button.warn { border-color:var(--warn); color:var(--warn); }
   pre { white-space:pre-wrap; word-break:break-all; max-height:340px;
         overflow:auto; background:#0c1120; border:1px solid var(--line);
         border-radius:8px; padding:10px; }
-  #toast { position:fixed; right:16px; bottom:16px; max-width:460px;
+  #toast { position:fixed; right:16px; bottom:16px; max-width:520px;
            background:#10182b; border:1px solid var(--line); border-radius:8px;
-           padding:10px 14px; display:none; }
+           padding:10px 14px; display:none; z-index:99; }
   #toast.err { border-color:var(--err); color:var(--err); }
   #toast.ok { border-color:var(--ok); color:var(--ok); }
   small { color:var(--muted); }
+  .tag { display:inline-block; background:#0c1120; border:1px solid var(--line);
+         border-radius:6px; padding:0 6px; margin:1px; font-size:11px; color:var(--accent); }
+  .mono { font-size:11px; color:var(--muted); word-break:break-all; }
+  .digest { font-size:10.5px; color:var(--muted); }
 </style>
 </head>
 <body>
 <header>
-  <h1>ROOT KEY CEREMONY CONSOLE</h1>
-  <span>fixed roles · threshold shares · device attestation · ordered stages</span>
-  <span style="margin-left:auto"><button onclick="refresh()">refresh</button>
-  <button onclick="loadAudit()">audit</button>
-  <button onclick="doExport()">export</button></span>
+  <h1>WATCHSTANDER CONSOLE</h1>
+  <span class="sub">终端证明会话 · 四眼授权单 · 编排库直连不受影响</span>
+  <div class="row" style="margin-left:auto; margin-bottom:0">
+    <select id="loginDevice" style="min-width:180px"></select>
+    <button class="primary" onclick="login()">login (terminal attestation)</button>
+    <button onclick="logout()" id="logoutBtn" disabled>logout</button>
+  </div>
 </header>
 <main>
+  <section class="panel full">
+    <h2>登录身份 · 可执行动作</h2>
+    <div id="identity"><small>未登录：选择终端（设备）并 login。登录是一次设备远程证明，
+      令牌绑定人员/职责/终端/证明时效。</small></div>
+  </section>
+
+  <section class="panel full">
+    <h2>授权单（四眼审批）</h2>
+    <div class="row">
+      <select id="opType">
+        <option value="POLICY_REVISE">POLICY_REVISE · 修改规则</option>
+        <option value="FLOW_ABORT">FLOW_ABORT · 终止活动流程</option>
+        <option value="PUBLISH">PUBLISH · 发布新一代</option>
+        <option value="OP_PURGE">OP_PURGE · 清除退役材料</option>
+      </select>
+      <small>载荷（规范化后冻结摘要，批准时逐字段重算比对）</small>
+    </div>
+    <textarea id="opPayload" rows="4" style="width:100%"
+      placeholder='{"ceremony_id":"...","expected_active":"..."}'></textarea>
+    <div class="row" style="margin-top:6px">
+      <button class="primary" onclick="createOrder()">发起授权单</button>
+      <button onclick="refreshOrders()">刷新</button>
+      <small>重复发起（同人/同终端/同摘要）返回原单；批准须另一人员、另一终端、互补职责。</small>
+    </div>
+    <div id="orders"><small>loading…</small></div>
+  </section>
+
   <section class="panel">
     <h2>Key versions by purpose</h2>
     <div id="keys"><small>loading…</small></div>
   </section>
   <section class="panel">
-    <h2>Ceremonies</h2>
+    <h2>Ceremonies（设备动作只能由本会话绑定终端发起）</h2>
     <div id="ceremonies"><small>loading…</small></div>
   </section>
 
   <section class="panel">
-    <h2>1 · Open ceremony</h2>
+    <h2>开仪式 / 驱动步骤（CEREMONY_EXEC）</h2>
     <div class="row">
       <select id="ckind">
         <option>GENERATE</option><option>ROTATE</option>
@@ -77,36 +113,24 @@
       </select>
       <input id="cpolicy" placeholder="policy_id" value="pol-root-v1"/>
       <input id="cpurpose" placeholder="purpose" value="root-signing"/>
-      <input id="cactor" placeholder="actor" value="alice"/>
       <input id="ctarget" placeholder="target_version (DESTROY only)"/>
     </div>
-    <button class="primary" onclick="openCeremony()">open</button>
-  </section>
-
-  <section class="panel">
-    <h2>2 · Drive a ceremony (device agents)</h2>
+    <div class="row"><button class="primary" onclick="openCeremony()">open</button></div>
     <div class="row">
-      <input id="cid" placeholder="ceremony_id"/>
-      <input id="did" placeholder="device_id e.g. dev_alice"/>
+      <input id="cid" placeholder="ceremony_id" style="flex:1"/>
     </div>
     <div class="row">
-      <button onclick="step('attest')">attest</button>
+      <button onclick="step('attest')">attest (本终端)</button>
       <button onclick="step('receive')">receive+verify share</button>
       <button onclick="step('confirm')">confirm</button>
       <button onclick="step('submit-share')">submit recovery share</button>
-      <button onclick="step('commit')">commit</button>
-      <button onclick="publish()">publish rotation (CAS)</button>
-      <button class="danger" onclick="abortCeremony()">abort round</button>
+      <button onclick="commitCeremony()">commit</button>
     </div>
-    <small>GENERATE/ROTATE: every device attests → receives → ≥threshold confirm
-      (incl. an owner) → commit. ROTATE then needs <b>publish</b>.
-      BACKUP: survivors attest → submit-share until threshold, then all
-      recovered-roster devices receive+confirm → commit.
-      DESTROY: all attest → ≥threshold confirm → commit.</small>
+    <small>发布新一代 / 终止流程 / 清除退役材料（DESTROY commit）均走上方授权单。</small>
   </section>
 
   <section class="panel">
-    <h2>3 · Signing test (signers use ACTIVE only)</h2>
+    <h2>Signing test（CEREMONY_EXEC 签 / 有 keys 职责即可验）</h2>
     <div class="row">
       <input id="spurpose" value="root-signing" style="width:160px"/>
       <input id="msg" value="canonical test message" style="flex:1"/>
@@ -119,9 +143,19 @@
   </section>
 
   <section class="panel">
-    <h2>Enrollment / policy</h2>
+    <h2>管理（RULES_GOVERNOR）</h2>
     <div class="row">
-      <input id="ppid" placeholder="participant_id"/>
+      <input id="revDid" placeholder="device_id to revoke"/>
+      <input id="revReason" placeholder="reason" value="compromise suspected"/>
+      <button class="danger" onclick="revokeDevice()">revoke terminal</button>
+    </div>
+    <div class="row">
+      <input id="grantPid" placeholder="participant_id"/>
+      <input id="grantDuties" placeholder="comma duties e.g. CEREMONY_EXEC,KEYS_READ"/>
+      <button onclick="setGrants()">set duty grants</button>
+    </div>
+    <div class="row">
+      <input id="ppid" placeholder="new participant_id"/>
       <input id="pname" placeholder="display name"/>
       <select id="prole">
         <option>ROOT_OWNER</option><option>KEY_STEWARD</option>
@@ -129,77 +163,259 @@
       </select>
       <button onclick="enroll()">enroll + provision device</button>
     </div>
-    <div class="row">
-      <input id="polid" value="pol-root-v1"/>
-      <input id="thr" type="number" value="3" style="width:70px"/>
-      <small>slots as JSON triples [[participant, role, device], …]</small>
-    </div>
-    <textarea id="slots" rows="3" style="width:100%"></textarea>
-    <div class="row" style="margin-top:6px">
-      <button onclick="createPolicy()">create policy</button>
-    </div>
   </section>
 
   <section class="panel full">
     <h2>Audit trail / export verification</h2>
-    <pre id="audit"><small>press audit</small></pre>
+    <div class="row">
+      <button onclick="loadAudit()">audit</button>
+      <button onclick="doExport()">export（含双方身份/令牌标识/摘要/决策链/执行结果）</button>
+    </div>
+    <pre id="audit"><small>press audit / export</small></pre>
   </section>
 </main>
 <div id="toast"></div>
 
 <script>
+let ME = null;            // /api/me
+let TOKEN = localStorage.getItem("kc_token") || null;
+let ALL_DEVICES = ["dev_alice","dev_bruno","dev_carla","dev_diego","dev_erin"];
 let LAST_SIG = null;
+
 function toast(t, cls) {
   const e = document.getElementById("toast");
   e.textContent = t; e.className = cls || ""; e.style.display = "block";
-  setTimeout(() => e.style.display = "none", 3500);
+  clearTimeout(window.__tt);
+  window.__tt = setTimeout(() => e.style.display = "none", 4500);
 }
-async function api(path, method, body) {
-  const opt = { method: method || "GET", headers: {"Content-Type":"application/json"} };
-  if (body) opt.body = JSON.stringify(body);
+async function api(path, method, body, noAuth) {
+  const opt = { method: method || "GET",
+                headers: {"Content-Type":"application/json"} };
+  if (!noAuth && TOKEN) opt.headers["Authorization"] = "Bearer " + TOKEN;
+  if (body !== undefined) opt.body = JSON.stringify(body);
   const r = await fetch(path, opt);
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(new Error(j.message || r.statusText), j);
+  if (!r.ok) {
+    const err = Object.assign(new Error(j.message || r.statusText), j);
+    if (r.status === 401) {
+      TOKEN = null; localStorage.removeItem("kc_token");
+      ME = null; renderIdentity();
+      toast("会话失效（" + (j.error||"401") + "）：请重新登录", "err");
+    }
+    throw err;
+  }
   return j;
 }
-async function refresh() {
+function pill(s){return `<span class="pill ${s}">${s}</span>`;}
+function esc(s){return String(s==null?"":s).replace(/[<>&]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]));}
+
+// ---- login / identity --------------------------------------------------
+async function login() {
+  const did = document.getElementById("loginDevice").value;
+  try {
+    const q = await api("/api/devices/prepare-login-quote", "POST",
+                        {device_id: did}, true);
+    const j = await api("/api/login", "POST",
+                        {device_id: did, quote: q.quote}, true);
+    TOKEN = j.token; localStorage.setItem("kc_token", TOKEN);
+    await refreshMe();
+    toast("登录成功：" + j.session.participant_id + " @ " + j.session.device_id
+          + (j.rebound_orders.length ? "；继续 " + j.rebound_orders.length + " 张授权单" : ""), "ok");
+    refreshAll();
+  } catch (e) { toast("login failed: " + e.message, "err"); }
+}
+async function logout() {
+  try { await api("/api/logout", "POST", {}); } catch (e) {}
+  TOKEN = null; localStorage.removeItem("kc_token"); ME = null;
+  renderIdentity(); toast("已登出", "ok");
+}
+async function refreshMe() {
+  ME = await api("/api/me");
+  renderIdentity();
+}
+function renderIdentity() {
+  const el = document.getElementById("identity");
+  document.getElementById("logoutBtn").disabled = !TOKEN;
+  if (!TOKEN) {
+    el.innerHTML = "<small>未登录。</small>";
+    return;
+  }
+  if (!ME) { el.innerHTML = "<small>校验会话中…</small>"; return; }
+  const s = ME.session, a = ME.actions;
+  const remaining = Math.max(0, Math.round(s.deadline - Date.now()/1000));
+  el.innerHTML = `
+    <div class="row">
+      <b>${esc(s.name)}</b> ${pill("person:"+s.participant_id)}
+      ${pill("role:"+s.role)} ${pill("terminal:"+s.device_id)}
+      <span class="pill ${remaining>0?"ACTIVE":"DESTROYED"}">
+        证明时效剩余 ${Math.floor(remaining/60)}m${remaining%60}s</span>
+      <span class="mono">token ${esc(s.token_id)}</span>
+    </div>
+    <div class="row"><b>duties:</b>
+      ${s.duties.length ? s.duties.map(d=>`<span class="tag">${d}</span>`).join("")
+                        : "<small>无（只读或 403）</small>"}</div>
+    <div class="row"><b>可发起:</b>
+      ${a.can_request.length ? a.can_request.map(d=>`<span class="tag">${d}</span>`).join("")
+                             : "<small>—</small>"}
+      &nbsp; <b>可批准:</b>
+      ${a.can_approve.length ? a.can_approve.map(d=>`<span class="tag">${d}</span>`).join("")
+                             : "<small>—</small>"}
+      &nbsp; <b>可读:</b> ${a.scopes.map(d=>`<span class="tag">${d}</span>`).join("")}</div>`;
+}
+
+// ---- orders ------------------------------------------------------------
+async function createOrder() {
+  const op = document.getElementById("opType").value;
+  let payload = {};
+  const txt = document.getElementById("opPayload").value.trim();
+  if (txt) { try { payload = JSON.parse(txt); } catch(e){ return toast("payload JSON 解析失败","err"); } }
+  try {
+    const j = await api("/api/orders", "POST", {op, payload});
+    toast("授权单 " + j.id + " 已冻结摘要 " + j.payload_digest.slice(0,16)
+          + "，等待互补职责批准", "ok");
+    refreshOrders();
+  } catch (e) { toast(e.message, "err"); }
+}
+async function refreshOrders() {
+  try {
+    const j = await api("/api/orders");
+    document.getElementById("orders").innerHTML = renderOrders(j.orders);
+  } catch (e) { document.getElementById("orders").innerHTML =
+      "<small>" + esc(e.message) + "</small>"; }
+}
+function renderOrders(list) {
+  if (!list.length) return "<small>暂无授权单</small>";
+  const me = ME ? ME.session.participant_id : null;
+  const rows = list.slice().reverse().map(o => {
+    const r = o.requester, a = o.approver;
+    const mine = me === r.participant_id;
+    const canApprove = ME && ME.actions.can_approve.includes(o.op);
+    const digest = o.payload_digest;
+    const remain = Math.max(0, Math.round(o.deadline - Date.now()/1000));
+    let btns = "";
+    if (o.status === "OPEN") {
+      if (canApprove && !mine)
+        btns += `<button class="approve" onclick="decide('${o.id}','approve')">批准(互补职责)</button>
+                 <button class="reject" onclick="rejectOrder('${o.id}')">拒绝</button>`;
+      if (mine)
+        btns += `<button class="warn" onclick="withdrawOrder('${o.id}')">撤回</button>`;
+    }
+    const chain = o.decisions.map(d=>
+      `<span class="tag">${d.kind}${d.actor?("@"+esc(d.actor.participant_id)+"·"+esc(d.actor.device_id)):""}</span>`
+    ).join(" → ");
+    return `<tr>
+      <td><span class="mono">${esc(o.id)}</span><br>${pill(o.status)}
+        <small> ttl ${remain}s</small></td>
+      <td><b>${o.op}</b><br><span class="digest">${esc(digest)}</span>
+        <div style="margin-top:3px"><small>${esc(JSON.stringify(o.payload)).slice(0,150)}</small></div></td>
+      <td>发起: ${esc(r.participant_id)}<br><small>${esc(r.duty)} · ${esc(r.device_id)}</small>
+        <div style="margin-top:3px">批准职责: <span class="tag">${esc(o.approver_duty)}</span></div>
+        ${a?`<div style="margin-top:3px">批准: ${esc(a.participant_id)}<br><small>${esc(a.duty)} · ${esc(a.device_id)}</small></div>`:""}</td>
+      <td>${chain}
+        ${o.close_reason?`<div style="margin-top:3px"><small class="DESTROYED">closed: ${esc(o.close_reason)}</small></div>`:""}
+        ${o.execution_error?`<div><small class="DESTROYED">${esc(JSON.stringify(o.execution_error).slice(0,160))}</small></div>`:""}
+        ${o.result?`<div style="margin-top:3px"><small class="COMPLETED">executed: ${esc(JSON.stringify(o.result)).slice(0,180)}</small></div>`:""}
+        <div class="row" style="margin-top:5px">${btns}</div></td></tr>`;
+  }).join("");
+  return `<table><tr><th>单/状态</th><th>动作/摘要/载荷</th><th>双方</th><th>决策链</th></tr>${rows}</table>`;
+}
+async function decide(oid, kind) {
+  const list = (await api("/api/orders")).orders;
+  const o = list.find(x => x.id === oid);
+  if (!o) return;
+  if (!confirm("批准将原子执行该授权单。\n确认冻结摘要未漂移？\n\n" + o.payload_digest)) return;
+  try {
+    const j = await api(`/api/orders/${oid}/approve`, "POST",
+                        {digest: o.payload_digest});
+    toast("已批准并执行：" + j.id + "（并发批准最多执行一次）", "ok");
+  } catch (e) {
+    toast("批准被拒/授权单关闭：" + (e.error||"") + " " + e.message, "err");
+  }
+  refreshAll();
+}
+async function rejectOrder(oid){
+  const reason = prompt("拒绝理由：", "four-eyes review rejected");
+  if (reason === null) return;
+  try { await api(`/api/orders/${oid}/reject`, "POST", {reason}); toast("已拒绝","ok"); }
+  catch(e){ toast(e.message,"err"); }
+  refreshAll();
+}
+async function withdrawOrder(oid){
+  const reason = prompt("撤回理由：", "withdrawn by requester");
+  if (reason === null) return;
+  try { await api(`/api/orders/${oid}/withdraw`, "POST", {reason}); toast("已撤回","ok"); }
+  catch(e){ toast(e.message,"err"); }
+  refreshAll();
+}
+
+// ---- ceremonies / keys -------------------------------------------------
+async function refreshKeys() {
   try {
     const k = await api("/api/keys");
     document.getElementById("keys").innerHTML = renderKeys(k);
-    const c = await api("/api/ceremonies");
-    document.getElementById("ceremonies").innerHTML = renderCeremonies(c);
-  } catch (e) { toast(String(e), "err"); }
+  } catch(e) { document.getElementById("keys").innerHTML =
+      "<small>"+esc(e.message)+"</small>"; }
 }
-function pill(s) { return `<span class="pill ${s}">${s}</span>`; }
 function renderKeys(k) {
   if (!k.keys.length) return "<small>no keys yet</small>";
   const by = {};
   for (const x of k.keys) (by[x.purpose] ??= []).push(x);
   return Object.entries(by).map(([purpose, list]) => `
     <div><b>${purpose}</b> <small>current: ${k.purposes[purpose] || "—"}</small>
-    <table><tr><th>ver</th><th>status</th><th>fingerprint</th><th>id</th><th>history</th></tr>
+    <table><tr><th>ver</th><th>status</th><th>fingerprint</th><th>id</th></tr>
     ${list.map(x => `<tr><td>${x.version}</td><td>${pill(x.status)}</td>
-      <td>${x.fingerprint}</td><td><small>${x.id}</small></td>
-      <td><small>src ${x.source_ceremony.slice(0,10)} ·
-      ${x.destroyed_at ? "destroyed" : x.retired_at ? "retiring" :
-        x.activated_at ? "active" : "staged"}</small></td></tr>`).join("")}
+      <td>${x.fingerprint}</td><td><small>${esc(x.id)}</small></td></tr>`).join("")}
     </table></div>`).join("");
 }
-function renderCeremonies(c) {
-  if (!c.ceremonies.length) return "<small>no ceremonies</small>";
-  return `<table><tr><th>id</th><th>kind</th><th>purpose</th><th>stage</th>
-    <th>status</th><th>attested/confirmed</th></tr>
-    ${c.ceremonies.map(x => {
+async function refreshCeremonies() {
+  try {
+    const c = await api("/api/ceremonies");
+    document.getElementById("ceremonies").innerHTML = renderCeremonies(c.ceremonies);
+  } catch(e) { document.getElementById("ceremonies").innerHTML =
+      "<small>"+esc(e.message)+"</small>"; }
+}
+function orderPayload(op, c) {
+  if (op === "FLOW_ABORT")
+    return {ceremony_id: c.id, reason: "manual abort via four-eyes order"};
+  if (op === "OP_PURGE")
+    return {ceremony_id: c.id, target_version: c.target_version
+            || (c.result && c.result.key_version)};
+  return null;
+}
+function renderCeremonies(cs) {
+  if (!cs.length) return "<small>no ceremonies</small>";
+  const me = ME ? ME.session : null;
+  return `<table><tr><th>id/kind/purpose</th><th>stage/status</th>
+    <th>att/conf</th><th>四眼动作</th></tr>
+    ${cs.map(x => {
       const parts = Object.values(x.participants);
-      const a = parts.filter(p => p.attested).length;
+      const a = parts.filter(p=>p.attested).length;
       const cf = x.confirmations.length;
-      return `<tr><td><small>${x.id}</small></td><td>${x.kind}</td>
-        <td>${x.purpose}</td><td>${x.stage}</td><td>${pill(x.status)}</td>
-        <td>${a}/${parts.length} · ${cf} confirmed
-        ${x.abort ? `<br><small class="DESTROYED">aborted: ${x.abort.reason}</small>`:""}
-        ${x.published ? `<br><small>published: ${x.published.old} → new</small>`:""}
-        </td></tr>`;
+      let guarded = "";
+      if (x.status === "OPEN" && ME && ME.actions.can_request.includes("FLOW_ABORT"))
+        guarded += `<button class="warn" onclick='quickOrder("FLOW_ABORT", ${JSON.stringify(orderPayload("FLOW_ABORT",x))})'>发起终止单</button>`;
+      if (x.kind === "ROTATE" && x.status === "COMPLETED" && !x.published
+          && ME && ME.actions.can_request.includes("PUBLISH"))
+        guarded += `<button class="primary" onclick='publishOrder("${x.id}","${x.purpose}")'>发起发布单</button>`;
+      if (x.kind === "DESTROY" && x.status === "OPEN"
+          && ME && ME.actions.can_request.includes("OP_PURGE"))
+        guarded += `<button class="danger" onclick='quickOrder("OP_PURGE", ${JSON.stringify(orderPayload("OP_PURGE",x))})'>发起清除单</button>`;
+      return `<tr><td><small>${esc(x.id)}</small><br>${x.kind} · ${x.purpose}</td>
+        <td>${x.stage}<br>${pill(x.status)}</td>
+        <td>${a}/${parts.length}<br>${cf} confirmed
+        ${x.abort?`<br><small class="DESTROYED">${esc(x.abort.reason)}</small>`:""}
+        ${x.published?`<br><small class="COMPLETED">published</small>`:""}</td>
+        <td>${guarded||"<small>—</small>"}</td></tr>`;
     }).join("")}</table>`;
+}
+function quickOrder(op, payload) {
+  document.getElementById("opType").value = op;
+  document.getElementById("opPayload").value = JSON.stringify(payload, null, 2);
+  toast("载荷已填入表单，点击「发起授权单」", "ok");
+}
+async function publishOrder(cid, purpose) {
+  const k = await api("/api/keys");
+  quickOrder("PUBLISH", {ceremony_id: cid, expected_active: k.purposes[purpose]});
 }
 async function openCeremony() {
   try {
@@ -208,46 +424,36 @@ async function openCeremony() {
       kind: document.getElementById("ckind").value,
       policy_id: document.getElementById("cpolicy").value,
       purpose: document.getElementById("cpurpose").value,
-      actor: document.getElementById("cactor").value,
       target_version: tv || null});
     document.getElementById("cid").value = j.id;
-    toast("opened " + j.id, "ok"); refresh();
+    toast("opened " + j.id, "ok"); refreshAll();
   } catch (e) { toast(e.message, "err"); }
 }
 async function step(which) {
   const cid = document.getElementById("cid").value.trim();
-  const did = document.getElementById("did").value.trim();
+  if (!cid) return toast("先填 ceremony_id", "err");
   try {
-    const url = `/api/ceremonies/${cid}/${which}`;
-    const body = which === "commit"
-      ? {actor: document.getElementById("cactor").value}
-      : {device_id: did};
-    const j = await api(url, "POST", body);
+    const j = await api(`/api/ceremonies/${cid}/${which}`, "POST",
+                        {device_id: ME.session.device_id});
     toast(which + " → " + (j.stage || j.status || "ok"), "ok");
-    if (j.id && which !== "commit") document.getElementById("cid").value = j.id;
-    refresh();
+    refreshAll();
   } catch (e) { toast(e.message, "err"); }
 }
-async function publish() {
+async function commitCeremony() {
   const cid = document.getElementById("cid").value.trim();
+  if (!cid) return toast("先填 ceremony_id", "err");
   try {
-    const k = await api("/api/keys");
-    const purpose = document.getElementById("cpurpose").value;
-    const expected = k.purposes[purpose];
-    const j = await api(`/api/ceremonies/${cid}/publish`, "POST",
-      {actor: document.getElementById("cactor").value, expected_active: expected});
-    toast("published; new version now ACTIVE", "ok"); refresh();
-  } catch (e) { toast(e.message + (e.error==="RACE_LOST" ? " (retry against current)":""), "err"); }
+    const j = await api(`/api/ceremonies/${cid}/commit`, "POST", {});
+    toast("committed → " + (j.stage || "ok"), "ok");
+    refreshAll();
+  } catch (e) {
+    if (e.error === "GUARDED_ACTION")
+      toast("清除退役材料必须走授权单：在仪式行点「发起清除单」", "err");
+    else toast(e.message, "err");
+  }
 }
-async function abortCeremony() {
-  const cid = document.getElementById("cid").value.trim();
-  try {
-    await api(`/api/ceremonies/${cid}/abort`, "POST",
-      {actor: document.getElementById("cactor").value,
-       reason: "manual abort from console"});
-    toast("round aborted; audit retained", "ok"); refresh();
-  } catch (e) { toast(e.message, "err"); }
-}
+
+// ---- signing -----------------------------------------------------------
 async function doSign() {
   try {
     const j = await api("/api/sign", "POST", {
@@ -265,8 +471,31 @@ async function doVerify() {
     const j = await api("/api/verify", "POST", {
       purpose: document.getElementById("spurpose").value,
       message: document.getElementById("msg").value, sig: LAST_SIG.sig});
-    toast(j.valid ? `valid: ${j.version_id} (${j.status}${j.active?", current":"":", historical"})`
-                  : "invalid", j.valid ? "ok" : "err");
+    toast(j.valid ? `valid: ${j.version_id} (${j.status})` : "invalid",
+          j.valid ? "ok" : "err");
+  } catch (e) { toast(e.message, "err"); }
+}
+
+// ---- admin -------------------------------------------------------------
+async function revokeDevice() {
+  const did = document.getElementById("revDid").value.trim();
+  if (!did) return;
+  if (!confirm("撤销终端将立即吊销其会话并关闭其开放授权单。继续？")) return;
+  try {
+    const j = await api("/api/devices/revoke", "POST",
+      {device_id: did, reason: document.getElementById("revReason").value});
+    toast("终端已撤销；杀死会话 " + j.sessions_killed.length +
+          "，关闭授权单 " + j.orders_closed.length, "ok");
+    refreshAll();
+  } catch (e) { toast(e.message, "err"); }
+}
+async function setGrants() {
+  const pid = document.getElementById("grantPid").value.trim();
+  const duties = document.getElementById("grantDuties").value
+      .split(",").map(s=>s.trim()).filter(Boolean);
+  try {
+    await api("/api/duty-grants", "POST", {participant_id: pid, duties});
+    toast("职责已更新（重新登录生效）", "ok");
   } catch (e) { toast(e.message, "err"); }
 }
 async function enroll() {
@@ -278,27 +507,44 @@ async function enroll() {
     toast("enrolled + device provisioned", "ok");
   } catch (e) { toast(e.message, "err"); }
 }
-async function createPolicy() {
-  try {
-    await api("/api/policies", "POST", {
-      policy_id: document.getElementById("polid").value,
-      label: "console policy", threshold: Number(document.getElementById("thr").value),
-      slots: JSON.parse(document.getElementById("slots").value)});
-    toast("policy created", "ok");
-  } catch (e) { toast(e.message, "err"); }
-}
+
+// ---- audit / export ----------------------------------------------------
 async function loadAudit() {
-  const j = await api("/api/audit");
-  document.getElementById("audit").textContent =
-    (j.verified ? "AUDIT CHAIN VERIFIED ✓\n\n" : "PROBLEMS: " + JSON.stringify(j.verify_problems) + "\n\n")
-    + j.entries.map(e => `${String(e.seq).padStart(4)} ${e.ts} ${e.event.padEnd(28)} ${JSON.stringify(e.payload).slice(0,200)}`).join("\n");
+  try {
+    const j = await api("/api/audit");
+    document.getElementById("audit").textContent =
+      (j.verified ? "AUDIT CHAIN VERIFIED ✓\n\n" : "PROBLEMS: " + JSON.stringify(j.verify_problems) + "\n\n")
+      + j.entries.map(e => `${String(e.seq).padStart(4)} ${e.ts} ${e.event.padEnd(26)} ${JSON.stringify(e.payload).slice(0,220)}`).join("\n");
+  } catch(e){ toast(e.message,"err"); }
 }
 async function doExport() {
-  const j = await api("/api/export");
-  document.getElementById("audit").textContent =
-    "EXPORT BUNDLE (signed, verifiable)\n\n" + JSON.stringify(j, null, 2).slice(0, 12000);
+  try {
+    const j = await api("/api/export");
+    document.getElementById("audit").textContent =
+      "EXPORT BUNDLE (signed; sessions/orders/decision chains included)\n\n"
+      + JSON.stringify(j, null, 2).slice(0, 20000);
+  } catch(e){ toast(e.message,"err"); }
 }
-refresh();
+
+// ---- boot --------------------------------------------------------------
+async function loadDeviceList() {
+  try {
+    const j = await api("/api/participants", "GET", undefined, true);
+    ALL_DEVICES = Object.keys(j.devices || {});
+  } catch (e) {}
+  document.getElementById("loginDevice").innerHTML =
+    ALL_DEVICES.map(d => `<option>${d}</option>`).join("");
+}
+async function refreshAll() {
+  if (TOKEN) {
+    try { await refreshMe(); } catch(e) {}
+    await Promise.all([refreshKeys(), refreshCeremonies(), refreshOrders()]);
+  }
+}
+loadDeviceList();
+if (TOKEN) { (async () => { try { await refreshMe(); } catch(e){} refreshAll(); })(); }
+setInterval(() => { if (ME) renderIdentity(); }, 1000);
+setInterval(() => { if (TOKEN) refreshOrders(); }, 8000);
 </script>
 </body>
 </html>

@@ -78,3 +78,24 @@ class RaceLost(CeremonyError):
 
     code = "RACE_LOST"
     http_status = 409
+
+
+class SessionError(CeremonyError):
+    """Watchstander token missing, expired, revoked or bound to a dead terminal."""
+
+    code = "SESSION_INVALID"
+    http_status = 401
+
+
+class Forbidden(CeremonyError):
+    """Authenticated session lacks the duty/scope required for this action."""
+
+    code = "FORBIDDEN"
+    http_status = 403
+
+
+class OrderError(CeremonyError):
+    """Authorization order is not in a state that permits this decision."""
+
+    code = "ORDER_DECIDED"
+    http_status = 409
