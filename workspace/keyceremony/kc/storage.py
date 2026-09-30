@@ -184,7 +184,19 @@ class Store:
         if not os.path.exists(self.state_path):
             return self._empty_state()
         with open(self.state_path, encoding="utf-8") as f:
-            return json.load(f)
+            state = json.load(f)
+        self._migrate(state)
+        return state
+
+    @staticmethod
+    def _migrate(state: dict):
+        """Fill collections introduced after schema 1 in-place."""
+        defaults = Store._empty_state()
+        for key, val in defaults.items():
+            if key not in state:
+                state[key] = val
+        if state.get("schema", 1) < defaults["schema"]:
+            state["schema"] = defaults["schema"]
 
     def save_state(self, state: dict):
         tmp = self.state_path + ".tmp"
@@ -197,7 +209,7 @@ class Store:
     @staticmethod
     def _empty_state() -> dict:
         return {
-            "schema": 1,
+            "schema": 2,
             "participants": {},   # participant_id -> record
             "devices": {},        # device_id -> EnrolledDevice dict
             "policies": {},       # policy_id -> Policy dict
@@ -207,5 +219,8 @@ class Store:
             "purposes": {},       # purpose -> active key_version_id
             "spent_nonces": {},   # nonce -> (ceremony_id, when)
             "wraps": {},          # key_version_id -> sealed material dict
+            "sessions": {},       # token_id -> operator session record
+            "login_challenges": {},  # device_id -> pending login challenge
+            "auth_tickets": {},   # ticket_id -> four-eyes authorization ticket
             "sequence": 0,
         }

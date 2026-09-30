@@ -31,6 +31,44 @@
 
 ---
 
+## 1b. 值班员会话与四眼审批（网页端 / 服务端门禁）
+
+上面的密码学仪式保证「任何单人不能重建密钥」；HTTP 服务层另外强制「任何单人不能
+独自改规则、停流程、发布或清除」。**编排库本身不加门禁**——脚本、恢复控制台和
+测试直接 `import kc.ceremony.Orchestrator` 仍可全量调用；门禁只存在于
+`kc.server` 的 HTTP 表面。
+
+| 需求 | 实现方式 |
+|---|---|
+| **登录令牌绑定人员/职责/终端/证明时效** | 登录先颁发一次性挑战，注册终端用钱包身份密钥对 `(挑战, 实时度量, 封装公钥, 时间戳)` 报价；服务端校验签名、度量、封装公钥、时窗后才签发令牌。令牌记录 `participant_id·role·device_id·measurement·quote_ts·expires_at`；原始令牌不落盘（只存其哈希标识 `token_id`）。终端撤销立即吊销其上全部在线会话。 |
+| **查询按职责放行** | `authz.READ_SCOPES`：owner/witness 可看审计与导出包，steward/operator 不可；设备动作（attest/receive/confirm/submit-share）还要求令牌**本人终端**，驱动他人终端返回 `403 FORBIDDEN`。 |
+| **四类高危动作须四眼** | 修改规则（`POLICY_CHANGE`）、终止活动流程（`ABORT_ACTIVE`）、发布新代（`PUBLISH_GENERATION`）、清除退役材料（`PURGE_RETIRED`，即 DESTROY 的 commit）在 HTTP 端不能直接调用，返回 `422 PROTECTED_OPERATION`。流程：发起人 `POST /api/tickets` → **另一人员、另一终端、互补职责** `POST /api/tickets/approve`，批准与执行在同一把存储锁内原子完成。 |
+| **冻结规范化载荷摘要 + 截止时间** | 授权单保存 `canonical(JSON)`（排序、压缩）载荷的 SHA256 摘要与 `deadline`；批准时重算摘要，不一致即 `409 PAYLOAD_DRIFT` 并关闭授权单。 |
+| **重复提交返回原授权单** | 同操作+同摘要存在 OPEN/EXECUTED 授权单时直接返回原单（`duplicate:true`），不新建。 |
+| **并发批准最多执行一次** | 批准临界区在跨线程/跨进程锁内；6 路并发批准恰好 1 路成功，其余 `TICKET_CLOSED`。 |
+| **失效即关闭、不落半成品** | 令牌失效/到期、终端撤销、载荷漂移、职责冲突、目标状态变化都会关闭授权单（记录机读 `closed_reason`），执行器在变更前完成校验，授权单从不留下执行一半的效果。 |
+| **重新登录后继续** | 同人员在**同一注册终端**重新证明换发新令牌（旧令牌置 SUPERSEDED）后，其在途授权单仍可被批准；若终端撤销或无后继会话则关闭。 |
+| **撤回** | 发起人可撤回自己在途的授权单（他人撤回 `403`）。 |
+| **网页展示与操作** | 控制台展示登录身份（人员/职责/终端/证明度量/令牌标识/到期）、按职责可执行动作（无权限按钮禁用）、授权单表（双方、摘要、截止、决策链、执行结果）；支持发起、批准、撤回及退出/重新登录。 |
+| **导出与离线核验** | 导出包新增 `sessions`（仅 token_id 等，绝无原始令牌）与 `auth_tickets`：双方身份、双方令牌标识、冻结摘要、完整决策链、执行结果。离线核验器校验：批准人≠发起人、终端不同、职责互补且在允许矩阵内、摘要稳定、执行效果在密钥/仪式状态中可见、每个执行/关闭/撤回都有哈希链审计记录；删改任一处都会被服务签名、审计链或 `four_eyes_tickets_ok` 检出。 |
+
+互补职责矩阵（`kc/authz.py`）：
+
+| 操作 | 可发起职责 | 可批准职责 |
+|---|---|---|
+| POLICY_CHANGE | ROOT_OWNER | WITNESS_SHAREHOLDER |
+| ABORT_ACTIVE | ROOT_OWNER / KEY_STEWARD / ENCLAVE_OPERATOR | WITNESS_SHAREHOLDER / ROOT_OWNER |
+| PUBLISH_GENERATION | ENCLAVE_OPERATOR / KEY_STEWARD | ROOT_OWNER |
+| PURGE_RETIRED | KEY_STEWARD / ENCLAVE_OPERATOR | WITNESS_SHAREHOLDER / ROOT_OWNER |
+
+登录与会话接口：`POST /api/session/login-challenge`、`POST /api/session/login`、
+`POST /api/session/relogin`、`POST /api/session/logout`、`GET /api/session/me`、
+`GET /api/tickets`、`POST /api/tickets[/approve|/withdraw]`、
+`POST /api/devices/revoke`。服务端令牌通过 `Authorization: Bearer …` 传递。
+
+---
+
+
 ## 2. 目录结构
 
 ```
@@ -42,18 +80,21 @@ kc/
   ceremony.py     编排器：四仪式 × 六阶段状态机、恢复数学、CAS 发布
   directory.py    密钥版本目录：STAGED/ACTIVE/RETIRING/DESTROYED、签名与验证
   storage.py      文件锁（跨线程可重入 RLock + flock）、原子状态、哈希链审计
+  sessions.py     终端证明登录：挑战/报价、绑定人员·职责·终端·时效的会话令牌
+  authz.py        四眼授权单：冻结摘要/截止、互补职责矩阵、决策链、单次执行
   console.py      设备侧代理：证明→取件→验份额→签名确认
   fleet.py        模拟设备机群（每台设备一个 0600 钱包文件）
-  export.py       记录导出与离线验证
-  server.py       HTTP API + 控制台（ThreadingHTTPServer）
-  console.html    仪式控制台 UI
+  export.py       记录导出与离线验证（含会话/四眼授权链核验）
+  server.py       HTTP API + 控制台（ThreadingHTTPServer，会话+四眼门禁）
+  console.html    仪式控制台 UI（登录身份/可执行动作/授权单面板）
   bootstrap.py    一键引导固定角色/设备/策略
   verify_export.py 导出/离线校验 CLI
 tests/
   smoke_e2e.py        端到端冒烟
   test_ceremonies.py  21 个场景测试（证明、顺序、恢复、竞态、销毁、篡改检测…）
   test_edge.py        8 个边界测试（超时、VSS 失败、吊销、策略护栏、多用途、并发）
-  http_e2e.py         HTTP 全流程含 8 路并发发布竞态
+  test_authz.py       30 个会话/四眼测试（绑定、门禁、漂移、截止、撤销、并发单次、篡改导出）
+  http_e2e.py         HTTP 全流程含登录门禁、四类授权单、6 路并发批准、库直调不受限
 ```
 
 ## 3. 快速开始
@@ -84,6 +125,8 @@ GENERATE / ROTATE（DESTROY 无投递阶段；BACKUP 见第 6 节）：
    - DESTROY 零化目标 RETIRING 版本的私钥材料。
 6. ROTATE 额外 `publish`（带 `expected_active` 的 CAS）：旧版 → RETIRING，
    新版 → ACTIVE，交接窗口开始。竞态失败返回 `RACE_LOST`，刷新当前指针重试。
+   **HTTP 端的 publish 必须经 PUBLISH_GENERATION 四眼授权单**（见第 1b 节）；
+   库直调 `Orchestrator.publish_rotation` 不受此限。
 
 ## 5. 签名测试接口
 
@@ -131,23 +174,38 @@ single_active_per_purpose / handover_consistent`。
 
 ## 8. HTTP API 摘要
 
+除 `/health`、控制台页面和两个登录接口外，所有 API 都需要
+`Authorization: Bearer <token>`（或 `X-Session-Token`）；令牌来自终端证明登录。
+设备类接口要求令牌绑定的终端与请求的 `device_id` 相同。
+
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/participants` | 注册参与者并自动配发设备钱包 |
-| POST | `/api/participants` / `/api/policies` | 参与者 / 不可变策略 |
-| POST | `/api/ceremonies/open` | 开仪式（GENERATE/ROTATE/BACKUP/DESTROY） |
-| POST | `/api/ceremonies/{id}/attest` | 设备证明 |
-| POST | `/api/ceremonies/{id}/receive` | 取密封份额（设备内验证） |
-| POST | `/api/ceremonies/{id}/confirm` | 门限确认（必须含 owner） |
-| POST | `/api/ceremonies/{id}/submit-share` | BACKUP 存活者提交旧份额 |
-| POST | `/api/ceremonies/{id}/commit` | 法定人数齐备后提交 |
-| POST | `/api/ceremonies/{id}/publish` | ROTATE CAS 发布 |
-| POST | `/api/ceremonies/{id}/abort` | 废弃本轮（审计保留） |
-| POST | `/api/sign` `/api/verify` | 签名测试接口 |
-| GET | `/api/keys` `/api/ceremonies` `/api/audit` `/api/export` | 只读视图 |
+| POST | `/api/session/login-challenge` `/api/session/login` | 终端证明登录（无需令牌） |
+| POST | `/api/session/relogin` `/api/session/logout` | 同终端重新登录续作 / 登出 |
+| GET | `/api/session/me` `/api/tickets` | 当前身份/可执行动作 / 授权单列表 |
+| POST | `/api/tickets` `/api/tickets/approve` `/api/tickets/withdraw` | 发起 / 批准执行 / 撤回授权单 |
+| POST | `/api/devices/revoke` | 撤销终端（吊销其会话、关闭其在途授权单，仅 owner） |
+| POST | `/api/participants` | 注册参与者并配发设备钱包（仅 owner） |
+| POST | `/api/policies` | **已改为四眼**：直接调用返回 `PROTECTED_OPERATION`，走 POLICY_CHANGE 授权单 |
+| POST | `/api/ceremonies/open` | 开仪式（按职责放行） |
+| POST | `/api/ceremonies/{id}/attest` | 设备证明（仅本人终端） |
+| POST | `/api/ceremonies/{id}/receive` | 取密封份额（仅本人终端） |
+| POST | `/api/ceremonies/{id}/confirm` | 门限确认（仅本人终端） |
+| POST | `/api/ceremonies/{id}/submit-share` | BACKUP 存活者提交旧份额（仅本人终端） |
+| POST | `/api/ceremonies/{id}/commit` | 法定人数齐备后提交（DESTROY 走 PURGE_RETIRED 授权单） |
+| POST | `/api/ceremonies/{id}/publish` | **已改为四眼**：PUBLISH_GENERATION 授权单批准时执行 CAS |
+| POST | `/api/ceremonies/{id}/abort` | **已改为四眼**：ABORT_ACTIVE 授权单 |
+| POST | `/api/sign` `/api/verify` | 签名测试接口（签名按职责放行） |
+| GET | `/api/keys` `/api/ceremonies` `/api/audit` `/api/export` | 只读视图（审计/导出仅 owner、witness） |
+
+> 注意：这些门禁只在 HTTP 层。直接使用 `Orchestrator`（库）时，
+> `create_policy/revise_policy`、`abort`、`publish_rotation`、`commit(DESTROY)`
+> 等全部保持原样可用。
 
 错误码：`POLICY_VIOLATION(422)`、`CONFLICT_STATE/DUPLICATE_ACTION/REPLAY_DETECTED/RACE_LOST(409)`、
-`ATTESTATION_FAILED/AUTH_FAILED(401)`、`NOT_FOUND(404)`、`TAMPER_DETECTED(409)`。
+`ATTESTATION_FAILED/AUTH_FAILED(401)`、`FORBIDDEN(403)`、
+`PROTECTED_OPERATION(422)`、`TICKET_CLOSED/PAYLOAD_DRIFT/COMPLEMENTARY_DUTY_CONFLICT/TARGET_STATE_CHANGED(409)`、
+`NOT_FOUND(404)`、`TAMPER_DETECTED(409)`。
 
 ## 9. 持久化与并发模型
 
@@ -165,12 +223,35 @@ Feldman VSS 逐份验证、安全素数群子群一致性）。生产部署时�
 - 份额多项式生成与签名运算放入真实 HSM/飞地；本系统的 `DeviceWallet` 是其软件模型；
 - 用 FIPS 验证的模块化指数实现（当前为教学级纯 Python 2048 位运算）；
 - 服务主包装密钥换成 KMS/HSM LMK；设备证明对接 TPM Quote/Nitro/TPM 证书链；
-- mTLS + 操作员身份认证（当前 API 信任本地调用者，动作信封层已防伪造与重放）。
+- 生产链路建议在终端证明登录之外再加 mTLS/传输加密。HTTP 层已实现终端证明
+  会话（人员·职责·终端·时效绑定）、按职责放行与四眼授权单；库调用面按设计
+  保持不加门禁（供受信恢复/自动化通道使用），生产暴露该面时应置于受控网络或
+  再加一层调用方鉴权。
 
 ## 11. 测试
 
 ```bash
 python3 tests/smoke_e2e.py
-python3 -m unittest tests.test_ceremonies tests.test_edge -v
-python3 tests/http_e2e.py 8211     # 含 8 路并发轮换发布
+python3 -m unittest tests.test_ceremonies tests.test_edge tests.test_authz -v
+python3 tests/http_e2e.py 8211   # 登录门禁 + 四类四眼授权单 + 6 路并发批准 + 库直调
 ```
+
+## 12. 一次四眼操作的示例（发布新代）
+
+```bash
+# 发起人 diego（ENCLAVE_OPERATOR，终端 dev_diego）先登录
+curl -s -XPOST localhost:8080/api/session/login-challenge -d '{"device_id":"dev_diego"}'
+TOK_D=$(curl -s -XPOST localhost:8080/api/session/login -d '{"device_id":"dev_diego"}' \
+        | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+# 冻结规范化载荷 + 截止时间，创建授权单（重复提交返回原单）
+T=$(curl -s -XPOST localhost:8080/api/tickets -H "Authorization: Bearer $TOK_D" \
+    -d '{"operation":"PUBLISH_GENERATION",
+         "payload":{"ceremony_id":"cer_xxx","expected_active":"kv_old"}}')
+# 批准人 alice（ROOT_OWNER，另一人员、另一终端 dev_alice、互补职责）登录并批准；
+# 批准瞬间在锁内做目标预检并执行 CAS，最多执行一次。
+curl -s -XPOST localhost:8080/api/tickets/approve -H "Authorization: Bearer $TOK_A" \
+    -d '{"ticket_id":"auth_..."}'
+```
+
+目标已被他路（含库直调）推进时，预检关闭授权单并返回 `TARGET_STATE_CHANGED`，
+不会产生半成品；用最新状态创建新授权单即可。

@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 echo "=== RFC 8032 / primitive correctness is exercised inside the suites ==="
 python3 tests/smoke_e2e.py
-python3 -m unittest tests.test_ceremonies tests.test_edge
-echo "=== HTTP e2e (includes 8-way concurrent publish race) ==="
+python3 -m unittest tests.test_ceremonies tests.test_edge tests.test_authz
+echo "=== HTTP e2e (login gates + four-eyes tickets + concurrent approve) ==="
 python3 tests/http_e2e.py "${1:-8301}"
 echo "ALL TESTS PASSED"

@@ -10,6 +10,9 @@ access to secrets or live state:
     "keys":       [...all key versions (public material only)...],
     "purposes":   {purpose: active_version_id},
     "ceremonies": [...public ceremony views...],
+    "sessions":   [...operator session records (token ids, never tokens)...],
+    "auth_tickets":[...four-eyes tickets: parties, token ids, digest,
+                    decision chain, execution result...],
     "audit":      [...full hash-chained audit entries...],
     "invariants": {computed checksums}
   }
@@ -21,7 +24,11 @@ Verification performed by `verify_bundle`:
     (lifecycle provenance: a version only exists via a COMPLETED ceremony),
   * destroyed versions carry no private material,
   * every purpose points at an ACTIVE version (single-current-key invariant),
-  * participants referenced by ceremonies exist and roles are valid.
+  * participants referenced by ceremonies exist and roles are valid,
+  * four-eyes tickets: creator/approver are different persons at different
+    terminals with complementary duties; frozen digests are stable; executed
+    tickets' effect is visible in the key/ceremony state and each execution
+    has a matching hash-chained audit record; closed tickets executed nothing.
 
 The auditor additionally gets `audit.txt` (human-readable) and `SHA256SUMS`.
 """
@@ -33,12 +40,13 @@ import json
 import os
 import time
 
+from . import authz as AZ
 from . import crypto, ed25519
 from .errors import TamperError
 from .storage import GENESIS
 
 
-def build_bundle(orch) -> dict:
+def build_bundle(orch, sessions=None, authz_mod=None) -> dict:
     s = orch.state
     body = {
         "format": "kc-export-v1",
@@ -55,6 +63,12 @@ def build_bundle(orch) -> dict:
         "purposes": dict(s["purposes"]),
         "ceremonies": [orch.public_ceremony(cid)
                        for cid in sorted(s["ceremonies"].keys())],
+        "sessions": [_public_session(r)
+                     for r in sorted(s.get("sessions", {}).values(),
+                                     key=lambda r: r["created_at"])],
+        "auth_tickets": [dict(t) for t in (
+            authz_mod.list_tickets() if authz_mod is not None
+            else list(s.get("auth_tickets", {}).values()))],
         "audit": list(orch.audit.entries),
         "devices": {
             did: {k: v for k, v in d.items()}
@@ -68,11 +82,20 @@ def build_bundle(orch) -> dict:
         "n_audit_entries": len(body["audit"]),
         "n_keys": len(body["keys"]),
         "n_ceremonies": len(body["ceremonies"]),
+        "n_auth_tickets": len(body["auth_tickets"]),
+        "n_sessions": len(body["sessions"]),
     }
     sig = ed25519.sign(orch.seed,
                        body["invariants"]["body_hash_excluding_sig"].encode())
     body["service_sig"] = crypto.b64e(sig)
     return body
+
+
+def _public_session(r: dict) -> dict:
+    keep = ("token_id", "participant_id", "role", "device_id", "measurement",
+            "quote_ts", "created_at", "expires_at", "status", "closed_at",
+            "superseded_at")
+    return {k: r[k] for k in keep if k in r}
 
 
 def _public_key(k: dict) -> dict:
@@ -225,4 +248,129 @@ def verify_bundle(bundle: dict) -> dict:
                     f"RETIRING key {r['id']} has no newer ACTIVE successor")
     checks["handover_consistent"] = True
 
+    # 7. four-eyes authorization tickets
+    ceremonies_by_id = {c["id"]: c for c in bundle["ceremonies"]}
+    keys_by_id = {k["id"]: k for k in keys}
+    audit_by_ticket: dict[str, list[dict]] = {}
+    for e in bundle["audit"]:
+        tid = e.get("payload", {}).get("ticket_id")
+        if tid:
+            audit_by_ticket.setdefault(tid, []).append(e)
+    four_eyes_ok = _verify_auth_tickets(
+        bundle, policies, ceremonies_by_id, keys_by_id,
+        audit_by_ticket, problems)
+    checks["four_eyes_tickets_ok"] = four_eyes_ok
+
     return {"ok": not problems, "problems": problems, "checks": checks}
+
+
+def _verify_auth_tickets(bundle, policies, ceremonies, keys_by_id,
+                         audit_by_ticket, problems) -> bool:
+    tickets = bundle.get("auth_tickets", [])
+    ok = True
+    seen_exec = set()
+    for t in tickets:
+        tid = t.get("id", "?")
+        bad = lambda msg: problems.append(f"ticket {tid}: {msg}")
+        op = t.get("operation")
+        if op not in AZ.PROTECTED_OPERATIONS:
+            bad(f"unknown operation {op}"); ok = False; continue
+
+        # frozen digest must match the stored canonical payload
+        expect_digest = AZ.ticket_digest(op, t.get("payload", {}))
+        if t.get("digest") != expect_digest:
+            bad("frozen digest does not match stored payload"); ok = False
+
+        creator = t.get("creator") or {}
+        c_pid, c_role, c_did = (creator.get("participant_id"),
+                                creator.get("role"), creator.get("device_id"))
+        if c_role not in AZ.CREATOR_DUTIES[op]:
+            bad(f"creator duty {c_role} may not initiate {op}"); ok = False
+
+        chain = t.get("decision_chain", [])
+        types = [d.get("type") for d in chain]
+        if types[:1] != ["created"]:
+            bad("decision chain does not start with created"); ok = False
+
+        events = [e["event"] for e in audit_by_ticket.get(tid, [])]
+        if "authz_ticket_created" not in events:
+            bad("no hash-chained audit record for creation"); ok = False
+
+        status = t.get("status")
+        if status == AZ.EXECUTED:
+            approver = t.get("approver") or {}
+            a_pid, a_role, a_did = (approver.get("participant_id"),
+                                    approver.get("role"),
+                                    approver.get("device_id"))
+            # four eyes: distinct person, distinct terminal, complementary
+            # (different and authorized) duty.
+            if not a_pid or a_pid == c_pid:
+                bad("approver is missing or is the same person"); ok = False
+            if not a_did or a_did == c_did:
+                bad("approver terminal missing or same as creator"); ok = False
+            if a_role not in AZ.APPROVER_DUTIES[op] or a_role == c_role:
+                bad(f"approver duty {a_role} is not complementary"); ok = False
+            if "approved" not in types or "executed" not in types:
+                bad("executed ticket lacks approved/executed chain links")
+                ok = False
+            if tid in seen_exec:
+                bad("ticket executed more than once"); ok = False
+            seen_exec.add(tid)
+            if "authz_ticket_executed" not in events:
+                bad("no hash-chained audit record for execution"); ok = False
+            # the recorded effect must be observable in the exported state
+            _verify_ticket_effect(t, ceremonies, keys_by_id,
+                                  policies, bad)
+        elif status in (AZ.WITHDRAWN, AZ.CLOSED):
+            if t.get("execution") is not None:
+                bad("non-executed ticket carries an execution result")
+                ok = False
+            want = ("withdrawn" if status == AZ.WITHDRAWN else "closed")
+            if want not in types:
+                bad(f"{status} ticket lacks {want} chain link"); ok = False
+            ev = ("authz_ticket_withdrawn" if status == AZ.WITHDRAWN
+                  else "authz_ticket_closed")
+            if ev not in events:
+                bad(f"no hash-chained audit record for {ev}"); ok = False
+        elif status == AZ.OPEN:
+            pass
+        else:
+            bad(f"unknown ticket status {status}"); ok = False
+    return ok
+
+
+def _verify_ticket_effect(t, ceremonies, keys_by_id, policies, bad):
+    op, p = t["operation"], t.get("payload", {})
+    if op == AZ.POLICY_CHANGE:
+        pol = policies.get(p.get("policy_id"))
+        if pol is None:
+            bad("executed POLICY_CHANGE has no resulting policy record")
+        return
+    cid = p.get("ceremony_id")
+    c = ceremonies.get(cid)
+    if c is None:
+        bad(f"execution references missing ceremony {cid}")
+        return
+    if op == AZ.ABORT_ACTIVE and c["status"] != "ABORTED":
+        bad("executed abort but ceremony is not ABORTED")
+    elif op == AZ.PUBLISH_GENERATION:
+        if not c.get("published"):
+            bad("executed publish but ceremony has no publish record")
+        else:
+            new = keys_by_id.get(c["result"]["key_version"])
+            if new is None or new["status"] != "ACTIVE":
+                bad("executed publish but successor is not ACTIVE")
+            if new and p.get("expected_active"):
+                pred = keys_by_id.get(p["expected_active"])
+                # the frozen predecessor was displaced by the publish; it is
+                # RETIRING during the handover window or DESTROYED afterwards.
+                if pred is None or new["id"] == pred["id"] or \
+                        pred["status"] not in ("RETIRING", "DESTROYED"):
+                    bad("frozen predecessor was not retired by the publish")
+    elif op == AZ.PURGE_RETIRED:
+        if c["status"] != "COMPLETED":
+            bad("executed purge but DESTROY ceremony is not COMPLETED")
+        else:
+            kv = keys_by_id.get(c["result"]["key_version"])
+            if kv is None or kv["status"] != "DESTROYED":
+                bad("executed purge but target key is not DESTROYED")
